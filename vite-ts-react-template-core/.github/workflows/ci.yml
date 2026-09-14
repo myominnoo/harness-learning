@@ -1,0 +1,388 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - core
+  pull_request:
+    branches:
+      - core
+
+env:
+  NODE_VERSION: "24.x"
+
+  # ----- Static analysis toggles & config -----
+  # Flip to "false" to disable a tool.
+  SNYK_ENABLED: "true"
+  SONARCLOUD_ENABLED: "true"
+
+  # The branch on which static-analysis jobs run (push or PR target).
+  # Fork users: change to your default branch (e.g. "main").
+  STATIC_ANALYSIS_BRANCH: "core"
+
+  # Fork users: replace these with your own SonarCloud org slug and project key.
+  # Find the project key in SonarCloud:
+  #   - the `id=...` value in the project page URL, OR
+  #   - Project -> Administration -> Information -> Key.
+  # GitHub-imported projects typically use "<org>_<repo>"; manually-created ones may differ.
+  SONAR_ORGANIZATION: "bartstc"
+  SONAR_PROJECT_KEY: "bartstc_vite-ts-react-template"
+
+jobs:
+  # Exposes workflow-level env vars as outputs so they can be referenced in
+  # job-level `if:` expressions (the `env` context is not available there).
+  config:
+    runs-on: ubuntu-latest
+    outputs:
+      snyk_enabled: ${{ steps.set.outputs.snyk_enabled }}
+      sonarcloud_enabled: ${{ steps.set.outputs.sonarcloud_enabled }}
+      static_analysis_branch: ${{ steps.set.outputs.static_analysis_branch }}
+    steps:
+      - id: set
+        run: |
+          echo "snyk_enabled=$SNYK_ENABLED" >> "$GITHUB_OUTPUT"
+          echo "sonarcloud_enabled=$SONARCLOUD_ENABLED" >> "$GITHUB_OUTPUT"
+          echo "static_analysis_branch=$STATIC_ANALYSIS_BRANCH" >> "$GITHUB_OUTPUT"
+
+  lint-tests:
+    uses: ./.github/workflows/run-tests.yml
+    with:
+      test-type: lint
+      test-command: pnpm lint
+
+  typecheck:
+    uses: ./.github/workflows/run-tests.yml
+    with:
+      test-type: typecheck
+      test-command: pnpm typecheck
+
+  madge-circular:
+    uses: ./.github/workflows/run-tests.yml
+    with:
+      test-type: madge-circular
+      test-command: pnpm madge:circular
+
+  playwright-tests:
+    uses: ./.github/workflows/playwright.yml
+    with:
+      node-version: "24.x"
+
+  unit-tests:
+    runs-on: ubuntu-latest
+
+    # For every direct push to target branches or when it's active PR
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile --ignore-scripts
+
+      - name: Run unit tests
+        run: pnpm test:unit:ci
+
+      - name: Upload test results
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: reports/**/*
+
+      - name: Upload coverage report
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-coverage-report
+          path: coverage/**/*
+
+  storybook-tests:
+    runs-on: ubuntu-latest
+    env:
+      STORYBOOK_DISABLE_TELEMETRY: 1
+      STORYBOOK: "true"
+      CI: true
+
+    # For every direct push to target branches or when it's active PR
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile --ignore-scripts
+
+      - name: Get Playwright version
+        id: playwright-version
+        run: echo "version=$(jq -r '.devDependencies.playwright' package.json)" >> $GITHUB_OUTPUT
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            node_modules/.pnpm/playwright-core*/node_modules/playwright-core/.local-browsers
+          key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install chromium --with-deps --only-shell
+
+      - name: Run storybook tests
+        run: pnpm test:storybook:ci
+
+      - name: Upload test results
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: storybook-test-results
+          path: reports/**/*
+
+      - name: Upload coverage report
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: storybook-coverage-report
+          path: coverage/**/*
+
+  snyk:
+    needs: config
+    if: >
+      ${{ needs.config.outputs.snyk_enabled == 'true'
+          && (github.ref_name == needs.config.outputs.static_analysis_branch
+              || github.base_ref == needs.config.outputs.static_analysis_branch) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile --ignore-scripts
+
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
+      - name: Snyk Open Source (SCA)
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          snyk test \
+            --all-projects \
+            --strict-out-of-sync=false \
+            --severity-threshold=high \
+            --sarif-file-output=snyk-deps.sarif
+
+      - name: Snyk Code (SAST)
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          snyk code test \
+            --severity-threshold=high \
+            --sarif-file-output=snyk-code.sarif
+
+      - name: Upload Snyk SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: .
+          category: snyk
+
+  sonarcloud:
+    needs: [config, unit-tests, storybook-tests]
+    if: >
+      ${{ needs.config.outputs.sonarcloud_enabled == 'true'
+          && (github.ref_name == needs.config.outputs.static_analysis_branch
+              || github.base_ref == needs.config.outputs.static_analysis_branch) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history for blame & new-code detection
+
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-coverage-report"
+
+      - name: Rewrite LCOV source paths for Sonar
+        run: |
+          # vitest's `projectRoot: "./src"` makes SF: paths relative to src/.
+          # Sonar expects paths relative to repo root, so prepend src/.
+          sed -i 's|^SF:|SF:src/|' \
+            unit-coverage-report/lcov.info \
+            storybook-coverage-report/lcov.info
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarqube-scan-action@v4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=${{ env.SONAR_PROJECT_KEY }}
+            -Dsonar.organization=${{ env.SONAR_ORGANIZATION }}
+
+  build:
+    needs:
+      [
+        lint-tests,
+        typecheck,
+        madge-circular,
+        unit-tests,
+        storybook-tests,
+        playwright-tests,
+      ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile --ignore-scripts
+
+      - name: Build an application
+        run: pnpm build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: dist
+
+  test-reports:
+    needs: [unit-tests, storybook-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Generate Full Coverage Report
+        uses: danielpalme/ReportGenerator-GitHub-Action@v5
+        with:
+          reports: "unit-coverage-report/lcov.info;storybook-coverage-report/lcov.info"
+          reporttypes: "MarkdownSummaryGithub;JsonSummary;Html"
+          targetdir: coverage-report
+
+      - name: Add Coverage Report Comment to PR
+        if: github.event_name == 'pull_request'
+        run: gh pr comment $PR_NUMBER --body-file coverage-report/SummaryGithub.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.number }}
+
+      - name: Publish Coverage Report in Build Summary
+        run: cat coverage-report/SummaryGithub.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Full Coverage Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-coverage-report
+          path: coverage-report/**/*
+
+      - name: Publish Test Results
+        uses: dorny/test-reporter@v2
+        id: test-reporter
+        with:
+          name: Test Results
+          path: unit-test-results/**/*.xml,storybook-test-results/**/*.xml
+          reporter: jest-junit
+          fail-on-error: false
+
+  deploy:
+    needs: [build, test-reports]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build
+      - name: Outputs content
+        run: ls
+      - name: Deploy
+        run: echo "Deploying..."

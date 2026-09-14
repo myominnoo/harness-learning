@@ -1,0 +1,81 @@
+/* eslint-disable no-console */
+import { useActorRef, useSelector } from "@xstate/react";
+import type { PropsWithChildren } from "react";
+import { useEffect } from "react";
+import { fromPromise } from "xstate";
+
+import { IS_AUTHENTICATED_STORAGE } from "@/features/auth/models/storage-keys";
+import { getUser } from "@/features/auth/providers/get-user";
+import { loginUser } from "@/features/auth/providers/login-user";
+import { AuthContext } from "@/features/authv2/application/auth-context";
+import {
+  authMachine,
+  type AuthMachineActors,
+  type AuthMachineEmittedEvents,
+} from "@/features/authv2/application/auth-machine";
+import { getRoles } from "@/features/authv2/providers/get-roles";
+import { sleep } from "@/lib/sleep";
+
+export const AuthProvider = ({ children }: PropsWithChildren) => {
+  const checkAuthStatus = () => {
+    return Promise.resolve(
+      localStorage.getItem(IS_AUTHENTICATED_STORAGE) === "true"
+    );
+  };
+
+  const logout = async () => {
+    await sleep(500);
+    localStorage.setItem(IS_AUTHENTICATED_STORAGE, "false");
+  };
+
+  const authActor = useActorRef(
+    authMachine.provide({
+      actors: {
+        checkAuthStatus: fromPromise(checkAuthStatus),
+        getUser: fromPromise(getUser),
+        loginUser: fromPromise(async ({ input }) => {
+          await loginUser(input);
+          localStorage.setItem(IS_AUTHENTICATED_STORAGE, "true");
+        }),
+        getRoles: fromPromise(getRoles),
+        logout: fromPromise(logout),
+      } satisfies AuthMachineActors,
+    })
+  );
+
+  const isLoading = useSelector(authActor, (state) => state.hasTag("loading"));
+
+  useEffect(
+    function subscribeToAuthEvents() {
+      const subscription = authActor.on("*", (event) => {
+        // AIDEV-NOTE: the "*" wildcard widens `event` to the base emitted type;
+        // the assertion is required to narrow it for the switch below.
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- false positive: removing it breaks pnpm typecheck
+        const emittedEvent = event as AuthMachineEmittedEvents;
+
+        switch (emittedEvent.type) {
+          case "USER_LOGGED_IN":
+            console.info("🎉 User logged in:", emittedEvent.user);
+            break;
+          case "USER_LOGGED_OUT":
+            console.info("👋 User logged out");
+            break;
+          case "ROLES_FETCHED":
+            console.info("🔐 Roles fetched:", emittedEvent.roles);
+            break;
+        }
+      });
+
+      return subscription.unsubscribe;
+    },
+    [authActor]
+  );
+
+  if (isLoading) {
+    return <div>{"Loading authentication..."}</div>;
+  }
+
+  return (
+    <AuthContext.Provider value={authActor}>{children}</AuthContext.Provider>
+  );
+};

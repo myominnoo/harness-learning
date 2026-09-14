@@ -1,0 +1,52 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "useDefineForClassFields": true,
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "verbatimModuleSyntax": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "preserve",
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "allowJs": true,
+    "esModuleInterop": true,
+    "incremental": true,
+    "paths": {
+      "@/*": ["./src/*"],
+      "@e2e/*": ["./e2e/*"]
+    },
+    "typeRoots": ["./node_modules/@types"]
+  },
+  "include": [
+    "test-setup.ts",
+    "test-setup-unit.ts",
+    "test-globals.ts",
+    "src/**/*",
+    ".storybook/**/*.ts",
+    "eslint.config.mjs",
+    "vitest.shims.d.ts",
+    "e2e/**/*",
+    "playwright.config.ts"
+  ],
+  "references": [
+    {
+      "path": "./tsconfig.node.json"
+    }
+  ],
+  "exclude": ["node_modules", "dist", "storybook-static", "reports"]
+}
