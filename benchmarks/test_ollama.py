@@ -8,66 +8,77 @@ NUM_CTX = 32768
 
 FINAL_INSTRUCTION = "Write a Python function that checks whether a string is a palindrome."
 
-# V4 experiment: build a deterministic, long prompt locally (no manual pasting).
-# Target roughly 8,000 input tokens (~1 token per ~4 chars -> ~32,000 chars)
-# before the final instruction.
-TARGET_CHAR_COUNT = 32000
 FILLER_LINE = (
     "The quick brown fox jumps over the lazy dog while the river flows steadily "
     "beneath the old stone bridge near the quiet village at the edge of the woods. "
 )
 
-filler = FILLER_LINE * (TARGET_CHAR_COUNT // len(FILLER_LINE) + 1)
-filler = filler[:TARGET_CHAR_COUNT]
+# V5 experiment: scale prompt targets using V4 calibration (32071 chars / 6298 tokens ≈ 5.09).
+TARGET_TOKENS = [2000, 4000, 8000, 16000]
+CHARS_PER_TOKEN = 5.09
 
-prompt = f"{filler}\n\n{FINAL_INSTRUCTION}"
+print(f"V5 experiment: {MODEL} num_ctx={NUM_CTX}")
+print("=" * 40)
 
-payload = {
-    "model": MODEL,
-    "prompt": prompt,
-    "stream": False,
-    "options": {
-        "num_ctx": NUM_CTX
+for target_tokens in TARGET_TOKENS:
+    char_target = int(target_tokens * CHARS_PER_TOKEN)
+    
+    filler = FILLER_LINE * (char_target // len(FILLER_LINE) + 1)
+    filler = filler[:char_target]
+    prompt = f"{filler}\n\n{FINAL_INSTRUCTION}"
+    estimated_chars = len(prompt)
+
+    payload = {
+        "model": MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "num_ctx": NUM_CTX
+        }
     }
-}
 
-print(f"V4 experiment: {MODEL} num_ctx={NUM_CTX}")
-print(f"  Prompt chars:   {len(prompt)}")
+    print(f"--- Target: ~{target_tokens} tokens (est. {estimated_chars} chars) ---")
 
-start = time.perf_counter()
-success = False
-
-request = urllib.request.Request(
-    OLLAMA_URL,
-    data=json.dumps(payload).encode(),
-    headers={"Content-Type": "application/json"},
-)
-
-try:
-    with urllib.request.urlopen(request) as response:
-        result = json.load(response)
-    success = bool(result.get("done"))
-except Exception as error:
+    start = time.perf_counter()
+    success = False
     result = {}
-    print(f"  Success:     False")
-    print(f"  Error:       {error}")
 
-elapsed = time.perf_counter() - start
+    request = urllib.request.Request(
+        OLLAMA_URL,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
 
-# Output token metrics (completion, existing measurement).
-eval_count = result.get("eval_count", 0)
-eval_duration = result.get("eval_duration", 0) / 1e9
-tokens_per_sec = eval_count / eval_duration if eval_duration else 0.0
+    try:
+        with urllib.request.urlopen(request) as response:
+            result = json.load(response)
+        success = bool(result.get("done"))
+    except Exception as error:
+        print(f"Error: {error}")
+        print("=" * 40)
+        continue
 
-# Prefill metrics: how many prompt tokens Ollama actually processed, and for how long.
-prompt_eval_count = result.get("prompt_eval_count", 0)
-prompt_eval_duration = result.get("prompt_eval_duration", 0) / 1e9
+    elapsed = time.perf_counter() - start
 
-print(f"  Success:     {success}")
-print(f"  Time:        {elapsed:.2f}s")
-print(f"  Ollama load: {result.get('load_duration', 0) / 1e9:.2f}s")
-print(f"  Ollama prompt_eval_count:   {prompt_eval_count}")
-print(f"  Ollama prompt_eval_duration: {prompt_eval_duration:.2f}s")
-print(f"  Tokens:      {eval_count}")
-print(f"  Ollama eval: {eval_duration:.2f}s")
-print(f"  Ollama tok/s: {tokens_per_sec:.2f}")
+    eval_count = result.get("eval_count", 0)
+    eval_duration = result.get("eval_duration", 0) / 1e9
+    tokens_per_sec = eval_count / eval_duration if eval_duration else 0.0
+
+    prompt_eval_count = result.get("prompt_eval_count", 0)
+    prompt_eval_duration = result.get("prompt_eval_duration", 0) / 1e9
+    prompt_tok_per_sec = prompt_eval_count / prompt_eval_duration if prompt_eval_duration else 0.0
+
+    load_duration = result.get("load_duration", 0) / 1e9
+
+    print(f"Target Tokens:      {target_tokens}")
+    print(f"Estimated Chars:    {estimated_chars}")
+    print(f"Actual Prompt Eval: {prompt_eval_count}")
+    print(f"P Eval Duration:    {prompt_eval_duration:.2f}s")
+    print(f"P Eval Tok/s:       {prompt_tok_per_sec:.2f}")
+    print(f"Load Duration:      {load_duration:.2f}s")
+    print(f"Eval Count:         {eval_count}")
+    print(f"Eval Duration:      {eval_duration:.2f}s")
+    print(f"Completion Tok/s:   {tokens_per_sec:.2f}")
+    print(f"Total Elapsed:      {elapsed:.2f}s")
+    print(f"Success:            {success}")
+    print("=" * 40)
