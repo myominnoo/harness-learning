@@ -1,0 +1,12 @@
+runtime:
+  max_context: 16384
+  max_files: 2
+  benchmark_timeout: 300
+  
+performance:
+  target_latency_ms: 200
+  max_tokens_per_request: 8192
+
+logging:
+  level: INFO
+  format: "%(asctime)s - %(levelname)s - %(message)s"

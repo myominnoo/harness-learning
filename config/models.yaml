@@ -1,0 +1,15 @@
+models:
+  llama2:
+    path: /models/llama2
+    context_window: 16384
+    benchmarked: true
+  
+  mistral:
+    path: /models/mistral
+    context_window: 8192
+    benchmarked: true
+  
+  gemma:
+    path: /models/gemma
+    context_window: 8192
+    benchmarked: false
