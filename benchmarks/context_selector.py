@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Simple context selector using keyword matching.
+Simple context selector using TF-IDF scoring.
 No LLM, embeddings, or external libraries used.
 """
+import math
 import re
 from collections import Counter
 
@@ -26,9 +27,8 @@ MAX_FILES = 2
 
 def select_files(files, query):
     """
-    Select files relevant to the query using weighted keyword scoring.
-    Returns a list of (filename, normalized_score, raw_score, word_count, matched_keywords)
-    tuples sorted by normalized score descending.
+    Select files relevant to the query using TF-IDF scoring.
+    Returns a list of (filename, normalized_score, raw_score) tuples sorted by score descending.
     """
     # Stopwords to exclude from keyword extraction
     stopwords = {
@@ -36,24 +36,20 @@ def select_files(files, query):
     }
     
     # Extract keywords from the query using proper tokenization
-    # Filter out stopwords and tokens shorter than 4 characters
     keywords = [
         word for word in re.findall(r"[a-z0-9]+", query.lower())
         if word not in stopwords and len(word) >= 3
     ]
     
-    # Weight each keyword by specificity
-    keyword_weights = {
-        "ollama": 3,
-        "benchmark": 3,
-        "16k": 3,
-        "tokens": 1,
-    }
-    
     scores = []
+    temp_data = []
+    
+    # First pass: calculate document frequency (df) for each keyword across all files,
+    # and count total valid documents (N).
+    total_docs = 0
+    doc_freqs = {}
     
     for filename in files:
-        # Read file content
         try:
             with open(filename, 'r') as f:
                 text_lower = f.read().lower()
@@ -63,26 +59,42 @@ def select_files(files, query):
         # Tokenize the document using regex (alphanumeric-only tokens)
         tokens = re.findall(r"[a-z0-9]+", text_lower)
         word_count = max(len(tokens), 1)
-
+        
         # Count whole-word occurrences using Counter
         token_counts = Counter(tokens)
+        
+        temp_data.append((filename, word_count, token_counts))
+        total_docs += 1
+        
+        for kw in keywords:
+            if token_counts.get(kw, 0) > 0:
+                doc_freqs[kw] = doc_freqs.get(kw, 0) + 1
 
-        score = 0
-        matched = {}
-        for keyword in keywords:
-            count = token_counts.get(keyword, 0)
-
-            if count > 0:
-                weight = keyword_weights.get(keyword, 1)
-                score += count * weight
-                matched[keyword] = count * weight
+    # Second pass: Calculate TF-IDF scores with length normalization
+    for filename, word_count, token_counts in temp_data:
+        score = 0.0
+        keyword_stats = {}
+        
+        for kw in keywords:
+            tf = token_counts.get(kw, 0)
+            
+            if tf > 0:
+                df = doc_freqs[kw]
+                
+                # Calculate IDF
+                idf = math.log((total_docs + 1) / (df + 1)) + 1
+                
+                # Calculate TF-IDF Contribution
+                tfidf_val = tf * idf
+                
+                score += tfidf_val
+                keyword_stats[kw] = {"tf": tf, "df": df, "idf": idf, "tfidf": tfidf_val}
 
         normalized_score = score / (word_count ** 0.5)
+        
+        scores.append((filename, normalized_score, score, keyword_stats))
     
-        if score > 0:
-            scores.append((filename, normalized_score, score, word_count, list(matched.items())))
-    
-    # Sort by score from highest to lowest
+    # Sort by normalized score from highest to lowest
     scores.sort(key=lambda x: x[1], reverse=True)
     
     return scores
@@ -92,13 +104,18 @@ def main():
     """Main function to demonstrate context selection."""
     results = select_files(FILES, QUERY)
     
-    print("Files ranked by keyword score:")
-    for filename, score, raw_score, word_count, matched_keywords in results:
-        print(f"{score:.2f}: {filename}")
-        print(f"    Raw score: {raw_score}")
-        print(f"    Words: {word_count}")
-        for keyword, weight in matched_keywords:
-            print(f"    {keyword}: {weight}")
+    print("Files ranked by TF-IDF score:")
+    for filename, norm_score, raw_score, kw_stats in results:
+        print(f"{norm_score:.2f}: {filename}")
+        print(f"    Raw TF-IDF score: {raw_score:.2f}")
+        
+        # Explainable breakdown of keyword contribution
+        for kw, stats in kw_stats.items():
+            print(f"    {kw}:")
+            print(f"        TF: {stats['tf']}")
+            print(f"        DF: {stats['df']}")
+            print(f"        IDF: {stats['idf']:.2f}")
+            print(f"        TF-IDF: {stats['tfidf']:.2f}")
     
     print("\nSelected for context:")
     for filename, *rest in results[:MAX_FILES]:
